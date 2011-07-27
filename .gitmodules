@@ -1,0 +1,3 @@
+[submodule "vendor/anachronism"]
+	path = vendor/anachronism
+	url = git://github.com/Twisol/anachronism.git

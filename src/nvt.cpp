@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstring>
 #include <node_buffer.h>
 
 #include "nvt.hpp"
@@ -9,6 +10,23 @@ using namespace node;
 Persistent<FunctionTemplate> NVT::constructor_template;
 
 static Persistent<ObjectTemplate> event_template;
+
+static Local<Object> make_buffer_from_data(const char* data, size_t length) {
+  HandleScope scope;
+  
+  Buffer* buf = Buffer::New(length);
+  memcpy(Buffer::Data(buf), data, length);
+  
+  Local<Object> ctx = Context::GetCurrent()->Global();
+  
+  Local<Function> buffer_ctor = Local<Function>::Cast(ctx->Get(String::NewSymbol("Buffer")));
+  Handle<Value> args[3] = {
+    buf->handle_,
+    Integer::New(length),
+    Integer::New(0),
+  };
+  return scope.Close(buffer_ctor->NewInstance(3, args));
+}
 
 
 bool NVT::HasInstance(Handle<Value> value) {
@@ -101,7 +119,7 @@ void NVT::OnTelnetEvent(telnet_event* event) {
     case TELNET_EV_DATA: {
       telnet_data_event* ev = (telnet_data_event*)event;
       obj->Set(String::NewSymbol("type"), String::NewSymbol("text"));
-      obj->Set(String::NewSymbol("text"), Buffer::New((char*)ev->data, ev->length)->handle_);
+      obj->Set(String::NewSymbol("text"), make_buffer_from_data((const char*)ev->data, ev->length));
       break;
     }
     case TELNET_EV_COMMAND: {
@@ -120,7 +138,7 @@ void NVT::OnTelnetEvent(telnet_event* event) {
     case TELNET_EV_SEND: {
       telnet_send_event* ev = (telnet_send_event*)event;
       obj->Set(String::NewSymbol("type"), String::NewSymbol("send"));
-      obj->Set(String::NewSymbol("data"), Buffer::New((char*)ev->data, ev->length)->handle_);
+      obj->Set(String::NewSymbol("data"), make_buffer_from_data((const char*)ev->data, ev->length));
       break;
     }
   }
@@ -151,13 +169,13 @@ void NVT::OnTeloptEvent(telnet_byte telopt, telnet_telopt_event* event) {
     case TELNET_EV_TELOPT_DATA: {
       telnet_telopt_data_event* ev = (telnet_telopt_data_event*)event;
       obj->Set(String::NewSymbol("type"), String::NewSymbol("text"));
-      obj->Set(String::NewSymbol("text"), Buffer::New((char*)ev->data, ev->length)->handle_);
+      obj->Set(String::NewSymbol("text"), make_buffer_from_data((const char*)ev->data, ev->length));
       break;
     }
   }
   
   Local<Value> args[2] = {Integer::NewFromUnsigned(telopt), obj};
-  //onTeloptEvent_->Call(Context::GetCurrent()->Global(), 2, args);
+  onTeloptEvent_->Call(Context::GetCurrent()->Global(), 2, args);
 }
 
 telnet_error NVT::Receive(telnet_byte* data, size_t length, size_t* bytes_used) {

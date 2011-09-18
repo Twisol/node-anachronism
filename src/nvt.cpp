@@ -37,8 +37,6 @@ void NVT::Init(Handle<Object> target) {
   // Create a function template for this class
   Local<FunctionTemplate> ctor(FunctionTemplate::New(&NVT::New));
   
-  ctor->Inherit(EventEmitter::constructor_template);
-  
   // Make space to store a reference to a NVT instance.
   ctor->InstanceTemplate()->SetInternalFieldCount(1);
   ctor->SetClassName(String::NewSymbol("NVT"));
@@ -67,30 +65,23 @@ void NVT::Init(Handle<Object> target) {
   event_template = Persistent<ObjectTemplate>(ObjectTemplate::New());
 }
 
-  /*
-    bool Emit(v8::Handle<v8::String> event,
-              int argc,
-              v8::Handle<v8::Value> argv[]);
-   */
-
 Handle<Value> NVT::New(const Arguments& args) {
   HandleScope scope;
   
   Local<Function> eventCallback = Local<Function>::Cast(args[0]);
   Local<Function> teloptCallback = Local<Function>::Cast(args[1]);
+  Local<Function> negotiateCallback = Local<Function>::Cast(args[2]);
   
-  NVT* telnet = new NVT(
-    Persistent<Function>::New(eventCallback),
-    Persistent<Function>::New(teloptCallback));
-  telnet->Wrap(args.This());
+  NVT* self = new NVT();
+  self->onEvent_ = Persistent<Function>::New(eventCallback);
+  self->onTeloptEvent_ = Persistent<Function>::New(teloptCallback);
+  self->onNegotiateEvent_ = Persistent<Function>::New(negotiateCallback);
+  
+  // TODO: pass a negotiate callback to telnet_nvt_new().
+  self->nvt_ = telnet_nvt_new((void*)self, &OnTelnetEvent, &OnTeloptEvent, &OnNegotiateEvent);
+  
+  self->Wrap(args.This());
   return args.This();
-}
-
-
-NVT::NVT(Persistent<Function> eventCallback, Persistent<Function> teloptCallback) {
-  onEvent_ = eventCallback;
-  onTeloptEvent_ = teloptCallback;
-  nvt_ = telnet_nvt_new(&NVT::OnTelnetEvent, &NVT::OnTeloptEvent, (void*)this);
 }
 
 NVT::~NVT() {
@@ -99,19 +90,17 @@ NVT::~NVT() {
   telnet_nvt_free(nvt_);
 }
 
-telnet_error NVT::InterruptParser() {
-  return telnet_interrupt(this->nvt_);
-}
-
 v8::Handle<v8::Value> NVT::InterruptParser(const v8::Arguments& args) {
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->InterruptParser();
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_interrupt(self->nvt_);
   return Undefined();
 }
 
-
-void NVT::OnTelnetEvent(telnet_event* event) {
+void NVT::OnTelnetEvent(telnet_nvt* nvt, telnet_event* event) {
   HandleScope scope;
+  
+  NVT* self = NULL;
+  telnet_get_userdata(nvt, (void**)&self);
   
   Local<Object> obj = ObjectTemplate::New()->NewInstance();
   
@@ -144,11 +133,14 @@ void NVT::OnTelnetEvent(telnet_event* event) {
   }
   
   Local<Value> args[1] = {obj};
-  onEvent_->Call(Context::GetCurrent()->Global(), 1, args);
+  self->onEvent_->Call(Context::GetCurrent()->Global(), 1, args);
 }
 
-void NVT::OnTeloptEvent(telnet_byte telopt, telnet_telopt_event* event) {
+void NVT::OnTeloptEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_telopt_event* event) {
   HandleScope scope;
+  
+  NVT* self = NULL;
+  telnet_get_userdata(nvt, (void**)&self);
   
   Local<Object> obj = ObjectTemplate::New()->NewInstance();
   
@@ -157,7 +149,7 @@ void NVT::OnTeloptEvent(telnet_byte telopt, telnet_telopt_event* event) {
       telnet_telopt_toggle_event* ev = (telnet_telopt_toggle_event*)event;
       obj->Set(String::NewSymbol("type"), String::NewSymbol("toggle"));
       obj->Set(String::NewSymbol("where"), String::NewSymbol((ev->where == TELNET_LOCAL) ? "local" : "remote"));
-      obj->Set(String::NewSymbol("status"), Boolean::New(ev->status == TELNET_ON));
+      obj->Set(String::NewSymbol("status"), Boolean::New(ev->status));
       break;
     }
     case TELNET_EV_TELOPT_FOCUS: {
@@ -175,36 +167,22 @@ void NVT::OnTeloptEvent(telnet_byte telopt, telnet_telopt_event* event) {
   }
   
   Local<Value> args[2] = {Integer::NewFromUnsigned(telopt), obj};
-  onTeloptEvent_->Call(Context::GetCurrent()->Global(), 2, args);
+  self->onTeloptEvent_->Call(Context::GetCurrent()->Global(), 2, args);
 }
 
-telnet_error NVT::Receive(telnet_byte* data, size_t length, size_t* bytes_used) {
-  return telnet_receive(this->nvt_, data, length, bytes_used);
-}
-
-telnet_error NVT::SendText(telnet_byte* data, size_t length) {
-  return telnet_send_data(this->nvt_, data, length);
-}
-
-telnet_error NVT::SendCommand(telnet_byte command) {
-  return telnet_send_command(this->nvt_, command);
-}
-
-telnet_error NVT::SendSubnegotiation(telnet_byte telopt, telnet_byte* data, size_t length) {
-  return telnet_send_subnegotiation(this->nvt_, telopt, data, length);
-}
-
-
-void NVT::OnTelnetEvent(telnet_nvt* nvt, telnet_event* event) {
-  NVT* telnet = NULL;
-  telnet_get_userdata(nvt, (void**)&telnet);
-  telnet->OnTelnetEvent(event);
-}
-
-void NVT::OnTeloptEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_telopt_event* event) {
-  NVT* telnet = NULL;
-  telnet_get_userdata(nvt, (void**)&telnet);
-  telnet->OnTeloptEvent(telopt, event);
+unsigned char NVT::OnNegotiateEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_telopt_location where) {
+  HandleScope scope;
+  
+  NVT* self = NULL;
+  telnet_get_userdata(nvt, (void**)&self);
+  
+  Local<Value> args[2] = {
+    Integer::NewFromUnsigned(telopt),
+    String::NewSymbol((where == TELNET_LOCAL) ? "locaL" : "remote"),
+  };
+  
+  Local<Value> result = self->onNegotiateEvent_->Call(Context::GetCurrent()->Global(), 2, args);
+  return result->ToBoolean()->Value();
 }
 
 Handle<Value> NVT::Receive(const Arguments& args) {
@@ -218,9 +196,11 @@ Handle<Value> NVT::Receive(const Arguments& args) {
   const char* data = Buffer::Data(buf);
   size_t len = Buffer::Length(buf);
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  
   size_t bytes_used;
-  nvt->Receive((telnet_byte*)data, len, &bytes_used);
+  telnet_receive(self->nvt_, (telnet_byte*)data, len, &bytes_used);
+  
   return scope.Close(Integer::New(bytes_used));
 }
 
@@ -235,8 +215,8 @@ Handle<Value> NVT::SendText(const Arguments& args) {
   const char* data = Buffer::Data(buf);
   size_t len = Buffer::Length(buf);
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->SendText((telnet_byte*)data, len);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_send_data(self->nvt_, (telnet_byte*)data, len);
   return Undefined();
 }
 
@@ -245,8 +225,8 @@ v8::Handle<v8::Value> NVT::SendCommand(const v8::Arguments& args) {
   
   telnet_byte command = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->SendCommand(command);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_send_command(self->nvt_, command);
   return Undefined();
 }
 
@@ -257,105 +237,76 @@ v8::Handle<v8::Value> NVT::SendSubnegotiation(const v8::Arguments& args) {
     return ThrowException(Exception::Error(String::New("Argument #1 must be a Buffer.")));
   }
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
   Local<Object> buf = args[1]->ToObject();
   const char* data = Buffer::Data(buf);
   size_t len = Buffer::Length(buf);
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->SendSubnegotiation(command, (telnet_byte*)data, len);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_send_subnegotiation(self->nvt_, telopt, (telnet_byte*)data, len);
   return Undefined();
 }
 
-
-
-telnet_error NVT::EnableLocalTelopt(const telnet_byte telopt, unsigned char lazy) {
-  return telnet_telopt_enable_local(this->nvt_, telopt, lazy);
-}
 
 v8::Handle<v8::Value> NVT::EnableLocalTelopt(const v8::Arguments& args) {
   HandleScope scope;
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
-  unsigned char lazy = (args[1]->BooleanValue()) ? 1 : 0;
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->EnableLocalTelopt(command, lazy);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_telopt_enable(self->nvt_, telopt, TELNET_LOCAL);
   return Undefined();
-}
-
-telnet_error NVT::EnableRemoteTelopt(const telnet_byte telopt, unsigned char lazy) {
-  return telnet_telopt_enable_remote(this->nvt_, telopt, lazy);
 }
 
 v8::Handle<v8::Value> NVT::EnableRemoteTelopt(const v8::Arguments& args) {
   HandleScope scope;
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
-  unsigned char lazy = (args[1]->BooleanValue()) ? 1 : 0;
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->EnableRemoteTelopt(command, lazy);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_telopt_enable(self->nvt_, telopt, TELNET_REMOTE);
   return Undefined();
-}
-
-telnet_error NVT::DisableLocalTelopt(const telnet_byte telopt) {
-  return telnet_telopt_disable_local(this->nvt_, telopt);
 }
 
 v8::Handle<v8::Value> NVT::DisableLocalTelopt(const v8::Arguments& args) {
   HandleScope scope;
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->DisableLocalTelopt(command);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_telopt_disable(self->nvt_, telopt, TELNET_LOCAL);
   return Undefined();
-}
-
-telnet_error NVT::DisableRemoteTelopt(const telnet_byte telopt) {
-  return telnet_telopt_disable_remote(this->nvt_, telopt);
 }
 
 v8::Handle<v8::Value> NVT::DisableRemoteTelopt(const v8::Arguments& args) {
   HandleScope scope;
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  nvt->DisableLocalTelopt(command);
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  telnet_telopt_disable(self->nvt_, telopt, TELNET_REMOTE);
   return Undefined();
-}
-
-telnet_telopt_mode NVT::LocalTeloptStatus(const telnet_byte telopt) {
-  telnet_telopt_mode status;
-  telnet_telopt_status_local(this->nvt_, telopt, &status);
-  return status;
 }
 
 v8::Handle<v8::Value> NVT::LocalTeloptStatus(const v8::Arguments& args) {
   HandleScope scope;
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  telnet_telopt_mode status = nvt->LocalTeloptStatus(command);
-  return scope.Close(Boolean::New(status == TELNET_ON));
-}
-
-telnet_telopt_mode NVT::RemoteTeloptStatus(const telnet_byte telopt) {
-  telnet_telopt_mode status;
-  telnet_telopt_status_remote(this->nvt_, telopt, &status);
-  return status;
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  unsigned char status;
+  telnet_telopt_status(self->nvt_, telopt, TELNET_LOCAL, &status);
+  return scope.Close(Boolean::New(status));
 }
 
 v8::Handle<v8::Value> NVT::RemoteTeloptStatus(const v8::Arguments& args) {
   HandleScope scope;
   
-  telnet_byte command = (telnet_byte)args[0]->Uint32Value();
+  telnet_byte telopt = (telnet_byte)args[0]->Uint32Value();
   
-  NVT* nvt = ObjectWrap::Unwrap<NVT>(args.This());
-  telnet_telopt_mode status = nvt->RemoteTeloptStatus(command);
-  return scope.Close(Boolean::New(status == TELNET_ON));
+  NVT* self = ObjectWrap::Unwrap<NVT>(args.This());
+  unsigned char status;
+  telnet_telopt_status(self->nvt_, telopt, TELNET_REMOTE, &status);
+  return scope.Close(Boolean::New(status));
 }

@@ -133,7 +133,12 @@ void NVT::OnTelnetEvent(telnet_nvt* nvt, telnet_event* event) {
   }
   
   Local<Value> args[1] = {obj};
+  
+  TryCatch try_catch;
   self->onEvent_->Call(Context::GetCurrent()->Global(), 1, args);
+  if (try_catch.HasCaught()) {
+    FatalException(try_catch);
+  }
 }
 
 void NVT::OnTeloptEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_telopt_event* event) {
@@ -167,7 +172,12 @@ void NVT::OnTeloptEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_telopt_event
   }
   
   Local<Value> args[2] = {Integer::NewFromUnsigned(telopt), obj};
+  
+  TryCatch try_catch;
   self->onTeloptEvent_->Call(Context::GetCurrent()->Global(), 2, args);
+  if (try_catch.HasCaught()) {
+    FatalException(try_catch);
+  }
 }
 
 unsigned char NVT::OnNegotiateEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_telopt_location where) {
@@ -178,10 +188,15 @@ unsigned char NVT::OnNegotiateEvent(telnet_nvt* nvt, telnet_byte telopt, telnet_
   
   Local<Value> args[2] = {
     Integer::NewFromUnsigned(telopt),
-    String::NewSymbol((where == TELNET_LOCAL) ? "locaL" : "remote"),
+    String::NewSymbol((where == TELNET_LOCAL) ? "local" : "remote"),
   };
   
+  TryCatch try_catch;
   Local<Value> result = self->onNegotiateEvent_->Call(Context::GetCurrent()->Global(), 2, args);
+  if (try_catch.HasCaught()) {
+    FatalException(try_catch);
+  }
+  
   return result->ToBoolean()->Value();
 }
 

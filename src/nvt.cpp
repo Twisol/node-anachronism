@@ -87,6 +87,7 @@ Handle<Value> NVT::New(const Arguments& args) {
 NVT::~NVT() {
   onEvent_.Dispose();
   onTeloptEvent_.Dispose();
+  onNegotiateEvent_.Dispose();
   telnet_nvt_free(nvt_);
 }
 
